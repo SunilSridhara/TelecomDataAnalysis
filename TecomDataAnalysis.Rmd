@@ -1,0 +1,355 @@
+---
+title: "TelecomDataAnalysis"
+author: "Sunil S"
+date: "8 July 2018"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r echo=TRUE, include=TRUE}
+rm(list=ls(all=TRUE))
+#to manipulate data
+if (!require("tidyverse")) install.packages("tidyverse")
+library("tidyverse")
+
+#path = "https://community.watsonanalytics.com/wp-content/uploads/2015/03/WA_Fn-UseC_-Telco-Customer-Churn.csv?cm_mc_uid=58920755505115141495567&cm_mc_sid_50200000=1514149556&cm_mc_sid_52640000=1514149556"
+```
+
+## Reading data
+```{r echo=TRUE, include=TRUE}
+#data = read.csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
+data = read.csv("TelecomData.csv")
+str(data)
+summary(data)
+```
+
+```{r echo=TRUE,include=TRUE}
+data$SeniorCitizen = as.factor(data$SeniorCitizen)
+str(data)
+#There are 3 numerical variables and 18 categorical variables. Then we observe the churn rate.
+```
+
+## Finding missing values if any
+```{r echo=TRUE,include=TRUE}
+#We observe that there are 0.16% of missing values in our dataset and all are linked to the variable TotalCharges and none of them are churning. They represent only 0.16% of our total observations. So we decide to remove them.
+
+d_colsum = (colSums(is.na(x = data))/7043)*100
+d_colsum
+
+```
+
+```{r echo=TRUE, include = TRUE}
+n_NA = data %>%
+        filter(is.na(TotalCharges)) %>%
+        select(Churn)
+n_NA
+#The next line give the percentage of missing values in our dataset
+100*nrow(n_NA)/nrow(data)
+
+#11 NA, that 0.16% of our database and none of them decode to churn
+data = data %>% filter(!is.na(TotalCharges))
+#data
+```
+
+## Data transformation
+```{r echo = TRUE, include=TRUE}
+#As we have seen in summary(data), there are 3 numerical variables and they don't have the same scale. Hence, we need to use a method to rescale them. First, we want to see their distribution.
+data_temp = data
+
+gather_data =gather(data %>% 
+               select(customerID, MonthlyCharges,TotalCharges, tenure),
+               variable, value,-customerID)
+
+ggplot(gather_data , aes(value)) + facet_wrap(~variable, scales = 'free_x') +
+        geom_histogram() + theme_bw()
+
+#None of the variables on the graph above has a gaussian distribution, so we rescale them without standardization.
+
+normalize = function(x) {
+        result = (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+        return(result)
+}
+
+norm.data = lapply(data %>% 
+                    select(MonthlyCharges, TotalCharges, tenure),
+                    normalize)
+norm.data = do.call(cbind, norm.data) %>%
+             as.data.frame()
+
+#Then we see in summary(db_churn that some variables have the following factors:
+#"Yes"
+#"No"
+#"No internet service" (or "No phone service").
+#The third factor doesn't give anymore no more informations so we recode the third factor in "No".
+
+factor.data = lapply(data %>% 
+                      select(-customerID,-MonthlyCharges, 
+                      -TotalCharges, -tenure), 
+                      function(x){
+        x = gsub("No internet service", "No", x)
+        x = gsub("No phone service", "No", x)
+        return(x)
+})
+
+factor.data = do.call(cbind, factor.data) %>% as.data.frame()
+
+data = cbind( customerID = data[,1],factor.data, norm.data)
+
+#removing unwanted variable
+rm(data_temp,factor.data,gather_data,norm.data,n_NA,d_colsum)
+```
+
+
+##Clustering using grower distance and PAM
+```{r echo=TRUE,include=TRUE}
+if (!require("Rtsne")) install.packages("Rtsne")
+library("Rtsne") # for t-SNE plot
+
+library(dplyr) # for data cleaning
+library(cluster) # for gower similarity and pam
+library(ggplot2) # for visualization
+
+data_clean = subset(data, select = -c(customerID, SeniorCitizen, gender, Dependents, Churn))
+
+gower_dist = daisy(data_clean,
+                    metric = "gower",
+                    type = list(logratio = 3))
+summary(gower_dist)
+# Check attributes to ensure the correct methods are being used
+# (I = interval, N = nominal)
+# Note that despite logratio being called, 
+# the type remains coded as "I"
+
+#As a sanity check, we can print out the most similar and dissimilar pair in the data to see if it makes sense.
+gower_mat <- as.matrix(gower_dist)
+
+# Output most similar pair
+data_clean[
+  which(gower_mat == min(gower_mat[gower_mat != min(gower_mat)]),
+        arr.ind = TRUE)[1, ], ]
+
+# Output most dissimilar pair
+data_clean[
+  which(gower_mat == max(gower_mat[gower_mat != max(gower_mat)]),
+        arr.ind = TRUE)[1, ], ]
+#silhouette width is used as matrix to calculate number of clusters to be extracted
+# Calculate silhouette width for many k using PAM
+sil_width <- c(NA)
+for(i in 2:10){
+    pam_fit <- pam(gower_dist,diss = TRUE,k = i)
+  sil_width[i] <- pam_fit$silinfo$avg.width
+}
+
+# Plot sihouette width (higher is better)
+plot(1:10, sil_width,
+     xlab = "Number of clusters",
+     ylab = "Silhouette Width")
+lines(1:10, sil_width)
+
+#from the plot we see 4 clusters yield highest value
+
+pam_fit = pam(gower_dist, diss = TRUE, k = 4)
+
+pam_results = data_clean %>%
+  mutate(cluster = pam_fit$clustering) %>%
+  group_by(cluster) %>%
+  do(the_summary = summary(.))
+
+pam_results$the_summary
+
+tsne_obj = Rtsne(gower_dist, is_distance = TRUE)
+
+tsne_data = tsne_obj$Y %>%
+  data.frame() %>%
+  setNames(c("X", "Y")) %>%
+  mutate(cluster = factor(pam_fit$clustering))
+
+ggplot(aes(x = X, y = Y), data = tsne_data) +
+  geom_point(aes(color = cluster))
+```
+```{r echo =TRUE, include =TRUE}
+hc_fit_mixed = hclust(gower_dist,method = "ward.D2")
+plot(hc_fit_mixed)
+```
+
+```{r echo=TRUE,include=TRUE}
+points_hc_mixed = cutree(hc_fit_mixed,k=4)
+data_clust_hc_mixed = cbind(points_hc_mixed,data)
+colnames(data_clust_hc_mixed)[1] ="cluster_hc_mixed"
+head(data_clust_hc_mixed)
+```
+
+```{r echo=TRUE,include=TRUE}
+dev.new(width=1920,height=1080,unit="px")
+plot(hc_fit_mixed)
+rect.hclust(hc_fit_mixed, k = 4, border = "red")
+```
+
+
+##Data Visualization per cluster
+```{r echo=TRUE,include=TRUE}
+a = table(data_clust_hc_mixed$InternetService,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="InternetService",legend.text = c("DSL","Fibre Optic","No"),col = c("blue","red","green"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+
+a = table(data_clust_hc_mixed$gender,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height= (y= scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="gender",legend.text = c("male","female"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+#No diff w.r.t male and female
+
+a = table(data_clust_hc_mixed$Partner,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="Partner",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$Dependents,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="Dependents",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$PhoneService,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="PhoneService",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$MultipleLines,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="MultipleLines",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$InternetService,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="InternetService",legend.text = c("DSL","Fibre Optic","No"),col = c("blue","red","green"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$OnlineSecurity,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="OnlineSecurity",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$OnlineBackup,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="OnlineBackup",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$DeviceProtection,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="DeviceProtection",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$TechSupport,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="TechSupport",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$StreamingTV,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="StreamingTV",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$StreamingMovies,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="StreamingMovies",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$Contract,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="Contract",legend.text = c("M2M","1Year","2Year"),col = c("blue","red","green"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$PaperlessBilling,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="PaperlessBilling",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+a = table(data_clust_hc_mixed$PaymentMethod,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="PaymentMethod",legend.text = c("Mailed","BT","CC","EC"),col = c("blue","red","green","yellow"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+
+
+cl_summary = data_clust_hc_mixed %>% group_by(cluster=as.factor(cluster_hc_mixed)) %>% summarise(MC.pr.cl = sum(MonthlyCharges,na.rm=TRUE)) %>% arrange(-MC.pr.cl)
+
+barplot(height=(y=cl_summary$MC.pr.cl),space = c(1,2,3,4),width=c(0.5,0.5,0.5,0.5),xlab = "Clusters",ylab="MonthlyCharges",legend.text = c("C1","C2","C3","C4"),col = c("blue","red","green","yellow"),main = "Monthly Charges Clusterwise",names.arg = c("C1","C2","C3","C4"))
+
+cl_summary = data_clust_hc_mixed %>% group_by(cluster=as.factor(cluster_hc_mixed)) %>% summarise(TC.pr.cl = sum(TotalCharges,na.rm=TRUE)) %>% arrange(-TC.pr.cl)
+
+barplot(cl_summary$TC.pr.cl,space = c(1,2,3,4),width=c(0.5,0.5,0.5,0.5),xlab = "Clusters",ylab="TotalCharges",legend.text = c("C1","C2","C3","C4"),col = c("blue","red","green","yellow"),main = "Total Charges Clusterwise",names.arg = c("C1","C2","C3","C4"))
+
+cl_summary = data_clust_hc_mixed %>% group_by(cluster=as.factor(cluster_hc_mixed)) %>% summarise(ten.pr.cl = sum(tenure,na.rm=TRUE)) %>% arrange(-ten.pr.cl)
+
+barplot(cl_summary$ten.pr.cl,space = c(1,2,3,4),width=c(0.5,0.5,0.5,0.5),xlab = "Clusters",ylab="Tenure",legend.text = c("C1","C2","C3","C4"),col = c("blue","red","green","yellow"),main = "Tenure Clusterwise",names.arg = c("C1","C2","C3","C4"))
+```
+##Clusterwise churn
+```{r echo =TRUE,include=TRUE}
+a = table(data_clust_hc_mixed$Churn,data_clust_hc_mixed$cluster_hc_mixed)
+a
+barplot(height=(y=scale(a,FALSE,colSums(a)) *100),xlab = "Clusters",ylab="Churn",legend.text = c("No","Yes"),col = c("blue","red"),xlim=c(0, ncol(y) + 3),args.legend=list(
+      x=ncol(y) + 3,
+      y=max(colSums(y)),
+      bty = "n"
+    ))
+```
