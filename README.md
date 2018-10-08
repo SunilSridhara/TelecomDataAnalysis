@@ -14,3 +14,20 @@ PAM is a iterative clustering procedure. In this algorithm
 2) Every data instance is assigned to its closest mediods
 3) Then for every cluster, new mediod is assigned based on the data instance that would yield lowest average distance if it were re-assigned as mediod.
 4) If atleast one mediod is changed then repeat from (b) otherwise algorithm ends.
+
+Data Analysis:
+Cluster 1 : Moderates, Cautious in spending, Could be Middle age
+Cluster 2 :  Tech savvy, Conservative in spending, Could be Teenagers
+Cluster 3 :  Tech savvy, Do not mind spending, Could be Youths, Middle age
+Cluster 4 :  Highly Conservatives, Could be Sr. Citizens
+
+Q a) If Telecom Provider wanted to give a new 5G plan offer - How will you figure out how many customers should be part of the offer?
+Obvious choice is to offer for Tech savvy and who can afford. 
+Choice is Cluster 3.
+
+Q b) Predict which customers are likely to switch to another firm
+Mostly likely people who are cost conscious, who do not have multiple lines and have not taken much of advanced features like Device protection, Online security and Tech Support.
+Choice is Cluster 1 and Cluster 2 people .
+
+Q c)
+ Plots as in the .rmd file.
